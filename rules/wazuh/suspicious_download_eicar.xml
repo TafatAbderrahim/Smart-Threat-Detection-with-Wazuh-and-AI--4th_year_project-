@@ -1,0 +1,133 @@
+<!--
+  ============================================================
+  Rule File : suspicious_download_eicar.xml
+  Author    : TAFAT Abderrahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1105 — Ingress Tool Transfer
+  Attack    : Executed by Yacine — EICAR test file download
+  ============================================================
+
+  Detection Logic Explanation:
+  This rule file covers TWO detection layers for the same attack:
+
+  Layer 1 — Sysmon file creation (Event ID 11):
+    Wazuh detects when a suspicious file is written to disk.
+    We watch for:
+    - Files dropped in temp directories (%TEMP%, %APPDATA%)
+    - Files with executable extensions (.exe, .ps1, .bat, .vbs)
+    - Files created by browsers or PowerShell (download behavior)
+
+  Layer 2 — YARA integration:
+    Wazuh can trigger YARA scans via active response.
+    When a file is flagged by Layer 1, Wazuh scans it with YARA.
+    The YARA rule (separate .yar file) matches the EICAR signature.
+    Wazuh then generates a second alert confirming malware match.
+
+  Why EICAR:
+    EICAR is an industry-standard test file. It is NOT malware
+    but every AV and IDS treats it as a detection test target.
+    It lets us prove the detection pipeline works safely.
+-->
+
+<group name="malware,suspicious_download,file_creation,windows">
+
+  <!--
+    RULE 100030 — Sysmon Event ID 11: file created in suspicious path
+    Logic : Sysmon logs every file creation event. We filter for
+            files written to temp/download paths, which is where
+            malware droppers and download cradles save payloads.
+            The regex covers common temp locations attackers use.
+    Level : 8 (medium — not every temp file is malicious)
+  -->
+  <rule id="100030" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^11$</field>
+    <field name="win.eventdata.targetFilename">(?i)(\\Temp\\|\\AppData\\Roaming\\|\\AppData\\Local\\Temp\\|\\Downloads\\|\\Public\\)</field>
+    <description>Suspicious File Creation: file written to temp/download path — $(win.eventdata.targetFilename)</description>
+    <mitre>
+      <id>T1105</id>
+    </mitre>
+    <group>file_creation,suspicious_path</group>
+  </rule>
+
+  <!--
+    RULE 100031 — Sysmon Event ID 11: executable dropped to disk
+    Logic : Narrows rule 100030 — only fires if the file has
+            an executable or script extension. Combining path
+            AND extension gives a stronger signal.
+    Level : 10
+  -->
+  <rule id="100031" level="10">
+    <if_matched_sid>100030</if_matched_sid>
+    <field name="win.eventdata.targetFilename">(?i)\.(exe|dll|ps1|bat|vbs|hta|js|cmd|scr|pif)$</field>
+    <description>Suspicious Executable Drop: $(win.eventdata.targetFilename) written to temp path — possible malware delivery</description>
+    <mitre>
+      <id>T1105</id>
+      <id>T1204.002</id>
+    </mitre>
+    <group>file_creation,executable_drop,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100032 — Sysmon Event ID 11: file created by PowerShell or browser
+    Logic : The creating process (Image field) tells us WHO
+            wrote the file. PowerShell, curl, wget, certutil are
+            all commonly abused for downloads. This rule fires
+            when any of them writes a file to disk.
+    Level : 11
+  -->
+  <rule id="100032" level="11">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^11$</field>
+    <field name="win.eventdata.image">(?i)(powershell\.exe|cmd\.exe|certutil\.exe|bitsadmin\.exe|mshta\.exe|wscript\.exe|cscript\.exe)</field>
+    <field name="win.eventdata.targetFilename">(?i)(\\Temp\\|\\AppData\\|\\Downloads\\|\\Public\\)</field>
+    <description>Suspicious Download: $(win.eventdata.image) wrote file to $(win.eventdata.targetFilename) — possible cradle download</description>
+    <mitre>
+      <id>T1105</id>
+      <id>T1059.001</id>
+    </mitre>
+    <group>download_cradle,file_creation,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100033 — YARA match: EICAR test file detected
+    Logic : This rule fires when Wazuh's active response runs
+            a YARA scan and returns a match for the EICAR rule.
+            The decoder extracts the YARA rule name from the
+            active response output, and we match on "EICAR".
+            Requires: YARA active response configured in ossec.conf
+                      and eicar_detection.yar deployed to agent.
+    Level : 13
+  -->
+  <rule id="100033" level="13">
+    <if_group>windows</if_group>
+    <match>YARA_RULE_MATCH</match>
+    <field name="yara.rule">(?i)(eicar|EICAR_Test)</field>
+    <description>YARA Match: EICAR test file detected on $(agent.name) — malware detection pipeline confirmed working</description>
+    <mitre>
+      <id>T1105</id>
+    </mitre>
+    <group>yara,malware_detected,eicar</group>
+  </rule>
+
+  <!--
+    RULE 100034 — Wazuh FIM: EICAR file integrity alert
+    Logic : If Wazuh FIM (File Integrity Monitoring) is watching
+            the Downloads or Temp directory, it will generate an
+            alert when the EICAR file appears. This rule catches
+            that FIM alert and re-raises it with MITRE context.
+    Level : 10
+  -->
+  <rule id="100034" level="10">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path">(?i)(\\Downloads\\|\\Temp\\|\\Public\\)</field>
+    <field name="syscheck.event">added</field>
+    <description>FIM Alert: new file added to monitored path — $(syscheck.path) — possible malware drop</description>
+    <mitre>
+      <id>T1105</id>
+    </mitre>
+    <group>fim,file_creation,suspicious_path</group>
+  </rule>
+
+</group>

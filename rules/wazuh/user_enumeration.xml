@@ -1,0 +1,85 @@
+<!--
+  ============================================================
+  Rule File : user_enumeration.xml
+  Author    : TAFAT Abderrahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1087 — Account Discovery / T1087.001 Local Account
+  Attack    : Executed by Yacine using CrackMapExec
+  ============================================================
+
+  Detection Logic Explanation:
+  User enumeration differs from brute force in one key way:
+  the attacker tries MANY DIFFERENT usernames from the same IP,
+  rather than hammering one username with many passwords.
+
+  We detect this by:
+  1. Catching repeated 4625 events from the same source IP
+  2. Using different_user to track username variation
+  3. Lower threshold than brute force (3 attempts) because
+     legitimate users don't try multiple different usernames
+-->
+
+<group name="enumeration,account_discovery,authentication_failed,windows">
+
+  <!--
+    RULE 100010 — Base rule: failed login with unknown username
+    Logic : Event ID 4625 where SubStatus is 0xC0000064,
+            which means "user does not exist". This is the
+            exact Windows code for an invalid username attempt.
+            This is what CrackMapExec triggers per attempt.
+    Level : 3 (informational)
+  -->
+  <rule id="100010" level="3">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4625$</field>
+    <field name="win.eventdata.subStatus">^0xC0000064$</field>
+    <description>Account Discovery: Login attempt with non-existent username from $(win.eventdata.ipAddress)</description>
+    <group>authentication_failed,enumeration</group>
+  </rule>
+
+  <!--
+    RULE 100011 — User Enumeration: multiple unknown usernames
+    Logic : Fires when rule 100010 matches 3+ times from the
+            SAME source IP within 60 seconds, but with
+            DIFFERENT usernames each time.
+            different_user is the key field — it tracks that
+            the targetUserName field varies across events.
+    Level : 11 (high)
+    Why different_user matters : Without it, this rule would
+            be identical to RDP brute force. different_user
+            tells Wazuh "only fire if the username field keeps
+            changing" — that is the enumeration signature.
+  -->
+  <rule id="100011" level="11" frequency="3" timeframe="60">
+    <if_matched_sid>100010</if_matched_sid>
+    <same_source_ip />
+    <different_user />
+    <description>User Enumeration: $(win.eventdata.ipAddress) is probing multiple non-existent usernames — possible CrackMapExec activity</description>
+    <mitre>
+      <id>T1087</id>
+      <id>T1087.001</id>
+    </mitre>
+    <group>enumeration,account_discovery,medium_severity</group>
+  </rule>
+
+  <!--
+    RULE 100012 — Escalation: high-volume user enumeration
+    Logic : Same IP tries 10+ different invalid usernames in
+            120 seconds. At this volume it is clearly automated
+            tool behavior, not a human mistake.
+    Level : 13
+  -->
+  <rule id="100012" level="13" frequency="10" timeframe="120">
+    <if_matched_sid>100010</if_matched_sid>
+    <same_source_ip />
+    <different_user />
+    <description>User Enumeration HIGH VOLUME: $(win.eventdata.ipAddress) probed $(frequency) different usernames — automated enumeration confirmed</description>
+    <mitre>
+      <id>T1087</id>
+      <id>T1087.001</id>
+    </mitre>
+    <group>enumeration,account_discovery,high_severity</group>
+  </rule>
+
+</group>

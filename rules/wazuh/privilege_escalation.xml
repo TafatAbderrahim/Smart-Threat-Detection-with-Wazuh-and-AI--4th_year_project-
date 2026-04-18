@@ -1,0 +1,161 @@
+<!--
+  ============================================================
+  Rule File : privilege_escalation.xml
+  Author    : TAFAT Abderrahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1068 — Exploitation for Privilege Escalation
+  Attack    : Executed by Yacine — standard user gaining admin rights
+  ============================================================
+
+  Detection Logic Explanation:
+  Privilege escalation is the HARDEST attack to detect cleanly
+  because Event ID 4672 fires for LEGITIMATE admin activity too
+  (e.g. an admin logging in normally also triggers 4672).
+
+  The solution is RULE CHAINING — we do not alert on 4672 alone.
+  Instead we look for 4672 in COMBINATION with:
+
+  1. A preceding suspicious process (Sysmon Event ID 1) — a low
+     privilege process spawning a high privilege child process.
+     This is the "unusual parent-child process chain" mentioned
+     in the project description.
+
+  2. A preceding failed privilege attempt — the attacker likely
+     tried and failed before succeeding (Event ID 4673).
+
+  3. Token manipulation — some escalation techniques use
+     token impersonation (Event ID 4624 logon type 9).
+
+  Chain used in this file:
+    100041 (suspicious process spawns child) →
+    100042 (that child gets special privileges via 4672) →
+    100043 (escalation confirmed — critical alert)
+-->
+
+<group name="privilege_escalation,process_injection,windows">
+
+  <!--
+    RULE 100040 — Sysmon Event ID 1: low-privilege process spawns suspicious child
+    Logic : Detects when a commonly abused process
+            (cmd.exe, powershell.exe, mshta.exe, wscript.exe)
+            is spawned by an unusual parent process.
+            Unusual parents: explorer.exe spawning powershell
+            directly, or office apps spawning cmd.exe.
+            The parentImage field comes from Sysmon Event ID 1.
+    Level : 8
+  -->
+  <rule id="100040" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.image">(?i)(cmd\.exe|powershell\.exe|mshta\.exe|wscript\.exe|cscript\.exe|rundll32\.exe)</field>
+    <field name="win.eventdata.parentImage">(?i)(explorer\.exe|winword\.exe|excel\.exe|outlook\.exe|iexplore\.exe|chrome\.exe|firefox\.exe)</field>
+    <description>Suspicious Process Chain: $(win.eventdata.parentImage) spawned $(win.eventdata.image) — unusual parent-child relationship</description>
+    <mitre>
+      <id>T1068</id>
+      <id>T1059</id>
+    </mitre>
+    <group>process_chain,suspicious_parent,execution</group>
+  </rule>
+
+  <!--
+    RULE 100041 — Event ID 4673: failed privileged operation
+    Logic : Event 4673 fires when a process requests a privilege
+            it does not have. This is often the FIRST sign of an
+            escalation attempt — the attacker tries and fails.
+            Catching this early (before 4672 fires) is valuable
+            for building the full forensic timeline.
+    Level : 7
+  -->
+  <rule id="100041" level="7">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4673$</field>
+    <description>Privilege Request Failed: $(win.eventdata.subjectUserName) attempted privileged operation and was denied — possible escalation attempt</description>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>privilege_escalation,access_denied</group>
+  </rule>
+
+  <!--
+    RULE 100042 — Event ID 4672: special privileges assigned to new logon
+    Logic : Fires when a session is granted sensitive privileges
+            (SeDebugPrivilege, SeTcbPrivilege, SeImpersonatePrivilege
+            etc.). By itself this can be legitimate — an admin logs in
+            and gets 4672 normally.
+            IMPORTANT: This rule alone is level 5 (low). It becomes
+            dangerous only when chained with 100040 or 100041.
+    Level : 5 (low — base rule only, feeds rule chaining)
+  -->
+  <rule id="100042" level="5">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4672$</field>
+    <description>Special Privileges Assigned: $(win.eventdata.subjectUserName) received elevated privileges (Event ID 4672)</description>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>privilege_escalation,special_privileges</group>
+  </rule>
+
+  <!--
+    RULE 100043 — CHAIN: suspicious process chain + privilege assignment
+    Logic : This is the key detection rule. It fires when:
+            - Rule 100040 fired (suspicious parent-child process)
+            - AND then rule 100042 fires for the SAME user
+            - Within 60 seconds
+            This correlation means: suspicious process launched →
+            that process gained elevated privileges.
+            That sequence is the escalation pattern.
+    Level : 13
+  -->
+  <rule id="100043" level="13" frequency="2" timeframe="60">
+    <if_matched_sid>100040,100042</if_matched_sid>
+    <same_user />
+    <description>Privilege Escalation DETECTED: suspicious process chain followed by privilege assignment for user $(win.eventdata.subjectUserName) — possible T1068 exploitation</description>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>privilege_escalation,confirmed,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100044 — CHAIN: failed privilege attempt followed by success
+    Logic : Catches the pattern: attacker tried and failed (4673)
+            then succeeded (4672) within 2 minutes.
+            This sequence is very suspicious — a legitimate admin
+            does not get access denied before getting privileges.
+    Level : 14
+  -->
+  <rule id="100044" level="14" frequency="2" timeframe="120">
+    <if_matched_sid>100041,100042</if_matched_sid>
+    <same_user />
+    <description>Privilege Escalation CONFIRMED: access denied followed by privilege grant for $(win.eventdata.subjectUserName) — escalation succeeded after failed attempt</description>
+    <mitre>
+      <id>T1068</id>
+      <id>T1134</id>
+    </mitre>
+    <group>privilege_escalation,confirmed,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100045 — Token impersonation logon (Logon Type 9)
+    Logic : Event ID 4624 with LogonType 9 means a process used
+            CreateProcessWithLogonW to run as another user without
+            their credentials — this is token impersonation.
+            Legitimate use is rare. In attack context it usually
+            means the attacker is running commands as SYSTEM.
+    Level : 12
+  -->
+  <rule id="100045" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4624$</field>
+    <field name="win.eventdata.logonType">^9$</field>
+    <description>Token Impersonation: LogonType 9 detected for $(win.eventdata.targetUserName) — possible privilege escalation via token manipulation</description>
+    <mitre>
+      <id>T1134</id>
+      <id>T1134.001</id>
+    </mitre>
+    <group>privilege_escalation,token_impersonation</group>
+  </rule>
+
+</group>

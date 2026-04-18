@@ -1,0 +1,11 @@
+4 files ready. Here's what you now have in total across both sessions:
+Already done (previous session):
+5 Wazuh XML rule files + 1 YARA file + README
+Done now:
+
+sysmonconfig.xml — deploy this on the Windows VM with sysmon -accepteula -i sysmonconfig.xml
+audit.rules — copy to /etc/audit/rules.d/ on the Linux VM, then augenrules --load
+mitre_mapping_table.md — your complete mapping table, paste directly into Chapter 3
+log_forensics_template.md — fill this in live during/after Yacine's attacks, one section per attack
+
+The only thing left that you genuinely cannot prepare in advance is the actual forensics — filling in that template with real log data, real timestamps, and real screenshots from Wazuh. That's Phase 4 work and it needs the actual attacks to happen first.

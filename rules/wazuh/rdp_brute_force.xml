@@ -1,0 +1,68 @@
+<!--
+  ============================================================
+  Rule File : rdp_brute_force.xml
+  Author    : TAFAT Abderrahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1110 — Brute Force
+  Attack    : Executed by Yacine using Hydra on port 3389
+  ============================================================
+-->
+
+<group name="rdp,brute_force,authentication_failed,windows">
+
+  <!--
+    RULE 100001 — Base rule: single RDP failed login
+    Logic : Catches every Event ID 4625 (failed logon) where the
+            logon type is 3 (network) or 10 (remote interactive).
+            This rule itself does NOT alert — it feeds rule 100002.
+    Level : 3 (informational, not alerted by default)
+  -->
+  <rule id="100001" level="3">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4625$</field>
+    <field name="win.eventdata.logonType">^3$|^10$</field>
+    <description>RDP: Single failed login attempt detected (Event ID 4625)</description>
+    <group>authentication_failed,rdp</group>
+  </rule>
+
+  <!--
+    RULE 100002 — Threshold rule: RDP Brute Force pattern
+    Logic : Fires when rule 100001 matches 5 or more times
+            from the SAME source IP within 30 seconds.
+            same_source_ip ensures we are tracking one attacker.
+    Level : 12 (high — triggers alert and active response)
+    Why 5 in 30s : A legitimate user who mistyped their password
+                   would not hit 5 failures in 30 seconds. This
+                   threshold filters out normal mistakes.
+  -->
+  <rule id="100002" level="12" frequency="5" timeframe="30">
+    <if_matched_sid>100001</if_matched_sid>
+    <same_source_ip />
+    <description>RDP Brute Force: $(win.eventdata.ipAddress) made $(frequency) failed login attempts in $(timeframe) seconds</description>
+    <mitre>
+      <id>T1110</id>
+      <id>T1110.001</id>
+    </mitre>
+    <group>brute_force,rdp,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100003 — Escalation: sustained brute force
+    Logic : Fires when rule 100002 itself matches 3 times,
+            meaning the attacker is STILL going after initial
+            detection. Escalates to critical.
+    Level : 15 (critical — maximum Wazuh severity)
+  -->
+  <rule id="100003" level="15" frequency="3" timeframe="120">
+    <if_matched_sid>100002</if_matched_sid>
+    <same_source_ip />
+    <description>RDP Brute Force SUSTAINED: $(win.eventdata.ipAddress) continues attacking — possible automated tool (Hydra)</description>
+    <mitre>
+      <id>T1110</id>
+      <id>T1110.001</id>
+    </mitre>
+    <group>brute_force,rdp,critical_severity</group>
+  </rule>
+
+</group>

@@ -1,0 +1,171 @@
+## ============================================================
+## auditd Rules — audit.rules
+## Author  : TAFAT Abderrahim
+## Project : Smart Threat Detection with Wazuh and AI
+## Team    : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+##
+## DEPLOYMENT:
+##   Copy to: /etc/audit/rules.d/wazuh-project.rules
+##   Apply  : sudo augenrules --load
+##   Verify : sudo auditctl -l
+##   Restart: sudo systemctl restart auditd
+##
+## HOW AUDITD WORKS:
+##   auditd is the Linux kernel audit daemon. It hooks into the
+##   kernel and intercepts system calls (syscalls) before they
+##   execute. Every rule below defines:
+##     -a action,filter  → when to trigger (always, on syscall)
+##     -S syscall_name   → which syscall to watch
+##     -F field=value    → conditions (which user, which path)
+##     -k key            → a label so Wazuh can identify the rule
+##
+##   Wazuh reads /var/log/audit/audit.log and parses these events
+##   using its auditd decoder, then matches them against rules.
+## ============================================================
+
+## ── BUFFER AND FAILURE MODE ──────────────────────────────────
+## Set audit buffer size — prevents log loss under high load
+## 8192 is sufficient for a lab environment
+-b 8192
+
+## Failure mode 1 = log failures silently (don't crash kernel)
+## Use 2 only in production (2 = kernel panic on audit failure)
+-f 1
+
+## ── SECTION 1: PRIVILEGE ESCALATION DETECTION ───────────────
+##
+## WHY: Our attack scenario 5 involves a standard user attempting
+## to gain admin rights. The syscalls below are triggered during
+## common Linux privilege escalation techniques.
+
+## sudo usage — every time sudo is invoked
+## -F uid!=0 means "only if the caller is NOT already root"
+## This avoids alerting when root runs sudo (which is unusual anyway)
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/sudo -F uid!=0 -k priv_escalation_sudo
+
+## su (switch user) — classic privilege switch command
+-a always,exit -F arch=b64 -S execve -F path=/bin/su -k priv_escalation_su
+
+## setuid syscall — process requesting to change its user ID
+## Legitimate use: very rare. Malicious use: gaining root
+-a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k priv_escalation_setuid
+
+## capset — changing Linux capabilities (fine-grained privileges)
+-a always,exit -F arch=b64 -S capset -k priv_escalation_capset
+
+## ptrace — process tracing, used in some escalation exploits
+## and also in debugger-based privilege tricks
+-a always,exit -F arch=b64 -S ptrace -k priv_escalation_ptrace
+
+## ── SECTION 2: SUSPICIOUS COMMAND EXECUTION ─────────────────
+##
+## WHY: Our attack scenarios involve running commands from Kali.
+## On Linux, every command execution goes through execve syscall.
+## We watch specific high-risk binaries that attackers abuse.
+
+## Shell spawning — attacker drops into a shell
+-a always,exit -F arch=b64 -S execve -F path=/bin/bash -F uid!=0 -k shell_execution
+-a always,exit -F arch=b64 -S execve -F path=/bin/sh -F uid!=0 -k shell_execution
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/dash -F uid!=0 -k shell_execution
+
+## Python/Perl/Ruby — scripting languages used for payloads
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/python3 -F uid!=0 -k script_execution
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/python -F uid!=0 -k script_execution
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/perl -F uid!=0 -k script_execution
+
+## Network tools — used for reconnaissance and download
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/curl -k network_tool_exec
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/wget -k network_tool_exec
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/nc -k network_tool_exec
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/ncat -k network_tool_exec
+
+## ── SECTION 3: SENSITIVE FILE ACCESS ────────────────────────
+##
+## WHY: Attackers often read /etc/passwd and /etc/shadow to
+## extract credentials for offline cracking. Watching these
+## files gives us direct evidence of credential access attempts.
+
+## /etc/passwd — user account list (readable by all users)
+## We monitor open and openat syscalls which are used to read files
+-a always,exit -F arch=b64 -S open -S openat -F path=/etc/passwd -F perm=r -F uid!=0 -k credential_access_passwd
+
+## /etc/shadow — password hashes (only root can read)
+## Any non-root access attempt here is immediately suspicious
+-a always,exit -F arch=b64 -S open -S openat -F path=/etc/shadow -k credential_access_shadow
+
+## /etc/sudoers — sudo configuration, modification = persistence
+-a always,exit -F arch=b64 -S open -S openat -F path=/etc/sudoers -k sudoers_access
+-w /etc/sudoers -p wa -k sudoers_modification
+
+## SSH keys — reading other users' private keys = lateral movement
+-a always,exit -F arch=b64 -S open -S openat -F path=/root/.ssh -F perm=r -k ssh_key_access
+-a always,exit -F arch=b64 -S open -S openat -F dir=/home -F path=.ssh/id_rsa -k ssh_key_access
+
+## ── SECTION 4: FILE SYSTEM MODIFICATIONS ────────────────────
+##
+## WHY: Attackers write malware to disk, modify system files,
+## or create persistence mechanisms via cron or init scripts.
+
+## /tmp and /var/tmp — common malware drop locations on Linux
+-w /tmp -p wx -k suspicious_write_tmp
+-w /var/tmp -p wx -k suspicious_write_tmp
+
+## Cron directories — persistence via scheduled tasks
+-w /etc/cron.d -p wa -k persistence_cron
+-w /etc/crontab -p wa -k persistence_cron
+-w /var/spool/cron -p wa -k persistence_cron
+
+## Init scripts — persistence on boot
+-w /etc/init.d -p wa -k persistence_init
+-w /etc/systemd/system -p wa -k persistence_systemd
+
+## chmod/chown on sensitive paths — attacker escalating permissions
+-a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -k file_permission_change
+-a always,exit -F arch=b64 -S chown -S fchown -S lchown -F uid!=0 -k file_ownership_change
+
+## ── SECTION 5: NETWORK ACTIVITY ─────────────────────────────
+##
+## WHY: Detecting when processes open network connections,
+## particularly bind (listening on port) and connect (outbound).
+
+## socket + connect — process initiating outbound connection
+-a always,exit -F arch=b64 -S socket -F a0=2 -k network_socket_create
+-a always,exit -F arch=b64 -S connect -k network_connect
+
+## bind — process listening on a port (possible backdoor)
+-a always,exit -F arch=b64 -S bind -k network_bind
+
+## ── SECTION 6: USER AND GROUP MANAGEMENT ────────────────────
+##
+## WHY: Attackers sometimes create new accounts or add themselves
+## to privileged groups as a persistence mechanism.
+
+## User creation and modification
+-w /usr/sbin/useradd -p x -k user_management
+-w /usr/sbin/usermod -p x -k user_management
+-w /usr/sbin/userdel -p x -k user_management
+-w /usr/sbin/groupadd -p x -k user_management
+-w /usr/sbin/passwd -p x -k password_change
+
+## /etc/passwd and /etc/group modification (write access)
+-w /etc/passwd -p wa -k passwd_modification
+-w /etc/group -p wa -k group_modification
+
+## ── SECTION 7: KERNEL MODULE LOADING ────────────────────────
+##
+## WHY: Rootkits load kernel modules to hide themselves.
+## Any module loading by a non-root process is critical.
+
+-a always,exit -F arch=b64 -S init_module -S finit_module -k kernel_module_load
+-a always,exit -F arch=b64 -S delete_module -k kernel_module_unload
+-w /sbin/insmod -p x -k kernel_module_load
+-w /sbin/modprobe -p x -k kernel_module_load
+-w /sbin/rmmod -p x -k kernel_module_unload
+
+## ── LOCK THE RULES ──────────────────────────────────────────
+## -e 2 locks the audit configuration until reboot.
+## This prevents an attacker from disabling auditd rules.
+## COMMENT THIS OUT during testing — you cannot reload rules
+## while locked without rebooting.
+## UNCOMMENT for final deployment.
+## -e 2

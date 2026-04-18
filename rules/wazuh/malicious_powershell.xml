@@ -1,0 +1,144 @@
+<!--
+  ============================================================
+  Rule File : malicious_powershell.xml
+  Author    : TAFAT Abderrahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1059.001 — Command and Scripting Interpreter: PowerShell
+  Attack    : Executed by Yacine using encoded commands + download cradle
+  ============================================================
+
+  Detection Logic Explanation:
+  Malicious PowerShell is detected at TWO levels:
+
+  Level 1 — Process creation (Sysmon Event ID 1):
+    Catches powershell.exe launched with suspicious flags like
+    -EncodedCommand or -enc (base64 payload) or -NonInteractive
+    combined with -WindowStyle Hidden (evasion indicators).
+
+  Level 2 — Script Block Logging (Sysmon/Windows Event ID 4104):
+    When PowerShell script block logging is enabled, Windows
+    logs the DECODED content of every script before execution.
+    This catches encoded commands AFTER they are decoded.
+    Keywords: Invoke-Expression, IEX, DownloadString, WebClient,
+    AMSI, bypass, reflection.
+
+  Both levels are needed because:
+  - Level 1 catches the launch before execution
+  - Level 2 catches evasion techniques that modify the command
+    after it launches (e.g. string concatenation obfuscation)
+-->
+
+<group name="powershell,malicious_code,execution,windows">
+
+  <!--
+    RULE 100020 — Sysmon Event ID 1: PowerShell with encoded command
+    Logic : Sysmon captures process creation. We check if the
+            process is powershell.exe AND the command line
+            contains -EncodedCommand or its alias -enc.
+            Encoded commands are almost always malicious because
+            legitimate scripts do not need base64 encoding.
+    Level : 10
+  -->
+  <rule id="100020" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.image">(?i)powershell\.exe$</field>
+    <field name="win.eventdata.commandLine">(?i)(-EncodedCommand|-enc\s)</field>
+    <description>Malicious PowerShell: encoded command detected — $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1027</id>
+    </mitre>
+    <group>powershell,encoded_command,execution</group>
+  </rule>
+
+  <!--
+    RULE 100021 — Sysmon Event ID 1: PowerShell download cradle
+    Logic : Detects powershell.exe command lines containing
+            typical download cradle patterns:
+            - DownloadString (downloads and executes in memory)
+            - DownloadFile (saves to disk)
+            - WebClient (the .NET class used for both)
+            - Invoke-WebRequest / iwr (PowerShell cmdlet)
+            These patterns indicate the attacker is pulling
+            a remote payload — classic stage 2 execution.
+    Level : 12
+  -->
+  <rule id="100021" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.image">(?i)powershell\.exe$</field>
+    <field name="win.eventdata.commandLine">(?i)(DownloadString|DownloadFile|WebClient|Invoke-WebRequest|iwr\s|curl\s)</field>
+    <description>Malicious PowerShell: download cradle detected — possible remote payload retrieval from $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1105</id>
+    </mitre>
+    <group>powershell,download_cradle,execution,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100022 — Sysmon Event ID 1: PowerShell AMSI bypass attempt
+    Logic : AMSI (Antimalware Scan Interface) is Windows built-in
+            script scanning. Attackers bypass it to avoid detection.
+            Common bypass strings detected here:
+            - AmsiUtils (reflection-based bypass)
+            - amsiInitFailed (sets the AMSI init flag to false)
+            - Disable-AmsiProvider
+    Level : 13
+  -->
+  <rule id="100022" level="13">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.image">(?i)powershell\.exe$</field>
+    <field name="win.eventdata.commandLine">(?i)(AmsiUtils|amsiInitFailed|Disable-AmsiProvider|amsi\.dll)</field>
+    <description>Malicious PowerShell: AMSI bypass attempt detected — attacker trying to disable script scanning</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1562.001</id>
+    </mitre>
+    <group>powershell,amsi_bypass,defense_evasion,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100023 — Script Block Logging Event ID 4104: IEX / Invoke-Expression
+    Logic : Event 4104 contains the DECODED script content.
+            Invoke-Expression (alias IEX) executes a string as
+            code — the primary technique for fileless execution.
+            We also catch common obfuscation: iex, &(iex),
+            .invoke(), etc.
+    Level : 12
+  -->
+  <rule id="100023" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4104$</field>
+    <field name="win.eventdata.scriptBlockText">(?i)(Invoke-Expression|IEX\s*\(|\.Invoke\(|&amp;\s*\(|iex\s)</field>
+    <description>Malicious PowerShell: Invoke-Expression / IEX detected in script block — possible fileless execution</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+    <group>powershell,script_block,execution</group>
+  </rule>
+
+  <!--
+    RULE 100024 — Combined: encoded command + hidden window (full evasion chain)
+    Logic : Chaining rule — fires when BOTH 100020 (encoded cmd)
+            AND the same process used -WindowStyle Hidden.
+            This combination means: encoded payload + hiding the
+            console window = textbook attacker behavior.
+    Level : 14
+  -->
+  <rule id="100024" level="14">
+    <if_matched_sid>100020</if_matched_sid>
+    <field name="win.eventdata.commandLine">(?i)(-WindowStyle\s+Hidden|-w\s+hidden|-NonInteractive)</field>
+    <description>Malicious PowerShell EVASION: encoded command with hidden window — full attacker evasion profile detected</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1027</id>
+      <id>T1564.003</id>
+    </mitre>
+    <group>powershell,evasion,critical_severity</group>
+  </rule>
+
+</group>

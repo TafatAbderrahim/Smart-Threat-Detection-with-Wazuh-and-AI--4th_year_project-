@@ -1,0 +1,241 @@
+<Sysmon schemaversion="4.90">
+  <!--
+    ============================================================
+    Sysmon Configuration — sysmonconfig.xml
+    Author  :  TAFAT Abderrahim
+    Project : Smart Threat Detection with Wazuh and AI
+    Team    : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+
+    PURPOSE:
+    This configuration tells Sysmon which events to capture on
+    the monitored Windows endpoint. It is deployed on the Windows
+    Agent VM and feeds logs directly into Wazuh via the agent.
+
+    PHILOSOPHY:
+    We do NOT capture everything — that generates too much noise
+    and fills disk space. We capture ONLY the event types that
+    are relevant to our 5 attack scenarios, with exclusions for
+    known-good system processes to reduce false positives.
+
+    EVENT TYPES ENABLED:
+      Event ID 1  — Process Creation         (all 5 attacks)
+      Event ID 3  — Network Connection       (RDP brute force, download cradle)
+      Event ID 7  — Image Load (DLL)         (privilege escalation via DLL injection)
+      Event ID 10 — Process Access           (token manipulation)
+      Event ID 11 — File Creation            (EICAR drop, suspicious files)
+      Event ID 12 — Registry Create/Delete   (persistence detection)
+      Event ID 13 — Registry Value Set       (persistence detection)
+      Event ID 15 — FileCreateStreamHash     (Alternate Data Streams)
+      Event ID 22 — DNS Query                (C2 communication detection)
+
+    EVENT TYPES DISABLED (too noisy, not needed for our attacks):
+      Event ID 2  — File Creation Time Change (rarely malicious in our scope)
+      Event ID 4  — Sysmon Service State Change
+      Event ID 5  — Process Terminate        (not needed, creates huge volume)
+      Event ID 6  — Driver Load              (not relevant to our attack set)
+      Event ID 8  — CreateRemoteThread       (complex, out of scope)
+      Event ID 9  — RawAccessRead            (out of scope)
+      Event ID 14 — Registry Rename          (out of scope)
+      Event ID 16 — Sysmon Config Change
+      Event ID 17 — Pipe Created             (out of scope)
+      Event ID 18 — Pipe Connected           (out of scope)
+    ============================================================
+  -->
+
+  <EventFiltering>
+
+    <!-- ══════════════════════════════════════════════════════
+         EVENT ID 1 — PROCESS CREATION
+         Captures every new process: name, PID, parent, command
+         line, user, and hash. This is the most important event
+         type for detecting malicious execution.
+
+         WHY WE NEED IT:
+         - PowerShell encoded commands show in CommandLine field
+         - Parent-child chain shows privilege escalation attempts
+         - Hashes let us correlate with threat intel
+
+         EXCLUSIONS: Noisy but harmless system processes that
+         would generate hundreds of events per minute with no
+         security value.
+    ══════════════════════════════════════════════════════ -->
+    <ProcessCreate onmatch="exclude">
+
+      <!-- Windows Update and patching — legitimate, very noisy -->
+      <Image condition="is">C:\Windows\System32\wuauclt.exe</Image>
+      <Image condition="is">C:\Windows\System32\TiWorker.exe</Image>
+      <Image condition="is">C:\Windows\System32\TrustedInstaller.exe</Image>
+
+      <!-- Windows Search indexing — background, not relevant -->
+      <Image condition="is">C:\Windows\System32\SearchIndexer.exe</Image>
+      <Image condition="is">C:\Windows\System32\SearchProtocolHost.exe</Image>
+      <Image condition="is">C:\Windows\System32\SearchFilterHost.exe</Image>
+
+      <!-- Font cache and DWM — background graphics processes -->
+      <Image condition="is">C:\Windows\System32\fontdrvhost.exe</Image>
+      <Image condition="is">C:\Windows\System32\dwm.exe</Image>
+
+      <!-- Antivirus scanner processes (if any installed) -->
+      <Image condition="begin with">C:\Program Files\Windows Defender\</Image>
+
+      <!--
+        NOTE: We do NOT exclude powershell.exe, cmd.exe, or
+        any scripting engine — those are exactly what we want
+        to capture for our attack detection rules.
+      -->
+    </ProcessCreate>
+
+    <!-- ══════════════════════════════════════════════════════
+         EVENT ID 3 — NETWORK CONNECTION
+         Captures outbound TCP/UDP connections with source/dest
+         IP, port, and the process that initiated the connection.
+
+         WHY WE NEED IT:
+         - RDP brute force: attacker connects to port 3389
+         - Download cradle: PowerShell connects to remote server
+         - User enumeration: CrackMapExec connects to SMB (445)
+
+         EXCLUSIONS: High-frequency system connections that have
+         no security relevance for our attack scenarios.
+    ══════════════════════════════════════════════════════ -->
+    <NetworkConnect onmatch="exclude">
+
+      <!-- DNS resolution — normal, creates massive volume -->
+      <DestinationPort condition="is">53</DestinationPort>
+
+      <!-- Windows time sync — legitimate background process -->
+      <Image condition="is">C:\Windows\System32\svchost.exe</Image>
+      <DestinationPort condition="is">123</DestinationPort>
+
+      <!-- Windows Update connections — legitimate -->
+      <Image condition="is">C:\Windows\System32\wuauclt.exe</Image>
+
+      <!--
+        NOTE: Port 3389 (RDP), 445 (SMB), 80/443 (HTTP/S) are
+        NOT excluded — we want to see connections on these ports
+        because they are used in our attack scenarios.
+      -->
+    </NetworkConnect>
+
+    <!-- ══════════════════════════════════════════════════════
+         EVENT ID 7 — IMAGE LOAD (DLL Loading)
+         Captures when a process loads a DLL, including the DLL
+         path, hash, and whether it is signed.
+
+         WHY WE NEED IT:
+         - Privilege escalation via DLL hijacking
+         - PowerShell loading reflection assemblies (AMSI bypass)
+         - Unsigned DLLs loaded by signed processes = suspicious
+
+         EXCLUSIONS: Known Microsoft signed DLLs that load
+         constantly and are never malicious.
+    ══════════════════════════════════════════════════════ -->
+    <ImageLoad onmatch="exclude">
+      <!-- Signed Microsoft system DLLs — always legitimate -->
+      <Signed condition="is">true</Signed>
+      <ImageLoaded condition="begin with">C:\Windows\System32\</ImageLoaded>
+      <ImageLoaded condition="begin with">C:\Windows\SysWOW64\</ImageLoaded>
+
+      <!--
+        NOTE: Unsigned DLLs and DLLs loaded from temp paths are
+        NOT excluded — these are our detection targets.
+      -->
+    </ImageLoad>
+
+    <!-- ══════════════════════════════════════════════════════
+         EVENT ID 10 — PROCESS ACCESS
+         Captures when one process opens a handle to another,
+         with the access rights requested.
+
+         WHY WE NEED IT:
+         - Token impersonation: process opens LSASS with
+           PROCESS_VM_READ to steal credentials
+         - Privilege escalation: opening system processes
+           with write access is suspicious
+
+         EXCLUSIONS: Antivirus and system tools that legitimately
+         read process memory as part of their function.
+    ══════════════════════════════════════════════════════ -->
+    <ProcessAccess onmatch="exclude">
+      <!-- Windows Defender memory scanning — legitimate -->
+      <SourceImage condition="begin with">C:\Program Files\Windows Defender\</SourceImage>
+
+      <!-- Task Manager — user viewing processes is normal -->
+      <SourceImage condition="is">C:\Windows\System32\taskmgr.exe</SourceImage>
+    </ProcessAccess>
+
+    <!-- ══════════════════════════════════════════════════════
+         EVENT ID 11 — FILE CREATION
+         Captures every file written to disk with the full path,
+         creating process, and timestamp.
+
+         WHY WE NEED IT:
+         - EICAR download: file appears in Downloads or Temp
+         - Malware dropper: executable written to temp path
+         - PowerShell download cradle: payload saved to disk
+
+         EXCLUSIONS: High-frequency file writes from known
+         benign applications (browsers cache, system logs).
+    ══════════════════════════════════════════════════════ -->
+    <FileCreate onmatch="exclude">
+      <!-- Browser cache files — constant, not relevant -->
+      <TargetFilename condition="contains">\AppData\Local\Google\Chrome\User Data\</TargetFilename>
+      <TargetFilename condition="contains">\AppData\Local\Mozilla\Firefox\Profiles\</TargetFilename>
+
+      <!-- Windows log rotation — system activity -->
+      <TargetFilename condition="begin with">C:\Windows\System32\winevt\Logs\</TargetFilename>
+      <TargetFilename condition="begin with">C:\Windows\Temp\MpCmdRun.log</TargetFilename>
+
+      <!--
+        NOTE: Downloads, AppData\Roaming, Public, and Temp paths
+        are NOT excluded — those are our primary detection paths.
+      -->
+    </FileCreate>
+
+    <!-- ══════════════════════════════════════════════════════
+         EVENT ID 12 & 13 — REGISTRY CREATE / SET
+         Captures registry key creation and value modification.
+
+         WHY WE NEED IT:
+         - Persistence: malware often adds Run keys
+         - Privilege escalation: some techniques modify UAC keys
+         - PowerShell execution policy bypass via registry
+
+         EXCLUSIONS: High-frequency legitimate registry writes.
+    ══════════════════════════════════════════════════════ -->
+    <RegistryEvent onmatch="include">
+      <!-- Run keys — common persistence location -->
+      <TargetObject condition="contains">SOFTWARE\Microsoft\Windows\CurrentVersion\Run</TargetObject>
+
+      <!-- UAC registry keys — modified during some escalation techniques -->
+      <TargetObject condition="contains">SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options</TargetObject>
+
+      <!-- PowerShell execution policy -->
+      <TargetObject condition="contains">SOFTWARE\Microsoft\PowerShell</TargetObject>
+
+      <!-- AMSI providers — attackers sometimes disable these -->
+      <TargetObject condition="contains">SOFTWARE\Microsoft\AMSI</TargetObject>
+    </RegistryEvent>
+
+    <!-- ══════════════════════════════════════════════════════
+         EVENT ID 22 — DNS QUERY
+         Captures every DNS lookup made by any process, with
+         the queried hostname and the process that asked.
+
+         WHY WE NEED IT:
+         - Download cradle connects to attacker-controlled domain
+         - C2 beaconing shows as repeated DNS queries
+         - Allows correlating network events back to processes
+
+         EXCLUSIONS: Known Microsoft update and telemetry domains
+         that query DNS constantly.
+    ══════════════════════════════════════════════════════ -->
+    <DnsQuery onmatch="exclude">
+      <!-- Windows Update domains — constant, legitimate -->
+      <QueryName condition="end with">.windowsupdate.com</QueryName>
+      <QueryName condition="end with">.microsoft.com</QueryName>
+      <QueryName condition="end with">.windows.com</QueryName>
+    </DnsQuery>
+
+  </EventFiltering>
+</Sysmon>
