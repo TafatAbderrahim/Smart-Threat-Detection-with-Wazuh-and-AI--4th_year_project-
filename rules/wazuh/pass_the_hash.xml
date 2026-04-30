@@ -1,0 +1,98 @@
+<!--
+  ============================================================
+  Rule File : pass_the_hash.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1550.002 — Pass the Hash
+  Tactic    : Lateral Movement, Defense Evasion
+  IDs       : 100050–100054
+  Attack    : nxc smb 192.168.56.60 -u dounia -H <NTLM_HASH>
+  ============================================================
+
+  Detection Logic:
+  Pass the Hash authenticates using a captured NTLM hash instead
+  of a plaintext password. Windows still logs a successful logon
+  (Event 4624) but with three specific indicators:
+    - LogonType 3  → network logon
+    - AuthenticationPackageName = NTLM
+    - KeyLength = 0 → no full auth exchange, hash was used directly
+  Normal NTLM logins have KeyLength > 0. KeyLength=0 is the
+  clearest PtH fingerprint in the Windows Security log.
+-->
+
+<group name="pass_the_hash,lateral_movement,authentication,windows">
+
+  <!--
+    RULE 100050 — Base: NTLM network logon with KeyLength 0
+    Logic : Event 4624, LogonType=3, NTLM, KeyLength=0
+            KeyLength=0 means no session key negotiated —
+            the authenticator used a raw hash, not a password.
+    Level : 10
+  -->
+  <rule id="100050" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4624$</field>
+    <match>LogonType: 3</match>
+    <match>AuthenticationPackageName: NTLM</match>
+    <match>KeyLength: 0</match>
+    <description>Pass the Hash: NTLM network logon with KeyLength=0 from $(win.eventdata.ipAddress) — possible hash-based authentication</description>
+    <mitre>
+      <id>T1550.002</id>
+    </mitre>
+    <group>pass_the_hash,lateral_movement</group>
+  </rule>
+
+  <!--
+    RULE 100051 — Escalation: repeated PtH from same source IP
+    Logic : 3+ PtH attempts from same IP in 60s = automated spray.
+            CrackMapExec cycles multiple hashes rapidly.
+    Level : 13
+  -->
+  <rule id="100051" level="13" frequency="3" timeframe="60">
+    <if_matched_sid>100050</if_matched_sid>
+    <same_source_ip />
+    <description>Pass the Hash SPRAY: $(win.eventdata.ipAddress) made $(frequency) hash-based logins in $(timeframe)s — CrackMapExec activity likely</description>
+    <mitre>
+      <id>T1550.002</id>
+      <id>T1110</id>
+    </mitre>
+    <group>pass_the_hash,lateral_movement,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100052 — Event 4648: explicit credentials after PtH session
+    Logic : 4648 fires when a process uses runas-style credentials.
+            After a PtH session is established, attacker may pivot
+            to another user — this catches that lateral step.
+    Level : 12
+  -->
+  <rule id="100052" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4648$</field>
+    <match>AuthenticationPackageName: NTLM</match>
+    <description>Explicit Credential Use via NTLM: possible lateral movement after Pass the Hash — target $(win.eventdata.targetServerName)</description>
+    <mitre>
+      <id>T1550.002</id>
+      <id>T1078</id>
+    </mitre>
+    <group>pass_the_hash,lateral_movement,explicit_credentials</group>
+  </rule>
+
+  <!--
+    RULE 100053 — Confirmed: PtH from known Kali IP
+    Logic : Source IP is the lab Kali attacker machine.
+            PtH from this IP is confirmed attack traffic.
+    Level : 14
+  -->
+  <rule id="100053" level="14">
+    <if_matched_sid>100050</if_matched_sid>
+    <match>192.168.109.158</match>
+    <description>Pass the Hash CONFIRMED from Kali attacker 192.168.109.158 — immediate investigation required</description>
+    <mitre>
+      <id>T1550.002</id>
+    </mitre>
+    <group>pass_the_hash,lateral_movement,critical_severity</group>
+  </rule>
+
+</group>

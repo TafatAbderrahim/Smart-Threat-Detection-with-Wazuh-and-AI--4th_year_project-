@@ -1,0 +1,133 @@
+<!--
+  ============================================================
+  Rule File : uac_bypass.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1548.002 — Abuse Elevation Control Mechanism: Bypass UAC
+  Tactic    : Privilege Escalation, Defense Evasion
+  IDs       : 100095–100099
+  Attack    : fodhelper UAC bypass — reg add + fodhelper.exe execution
+  ============================================================
+
+  Detection Logic:
+  UAC (User Account Control) is supposed to prompt the user before
+  elevating privileges. UAC bypass techniques abuse trusted Windows
+  processes that are marked "auto-elevate" — they run elevated
+  without showing the UAC prompt to the user.
+
+  Common auto-elevate processes exploited:
+    - fodhelper.exe  (Features on Demand helper)
+    - eventvwr.exe   (Event Viewer)
+    - sdclt.exe      (Windows Backup)
+    - wsreset.exe    (Windows Store Reset)
+
+  The attack pattern:
+  1. Attacker sets a registry key that these auto-elevate processes
+     read when launched (e.g. HKCU\Software\Classes\ms-settings\shell\open\command)
+  2. Attacker launches the auto-elevate process (fodhelper.exe)
+  3. fodhelper.exe reads the hijacked registry key and executes
+     the attacker's payload with elevated privileges — no UAC prompt
+
+  Detection: Sysmon Event ID 1 where the PARENT is a known
+  auto-elevate process and the CHILD is cmd.exe or powershell.exe.
+  Legitimate auto-elevate processes never spawn interactive shells.
+-->
+
+<group name="uac_bypass,privilege_escalation,defense_evasion,windows">
+
+  <!--
+    RULE 100095 — Sysmon ID 1: auto-elevate process spawning shell
+    Logic : Known UAC-bypassable processes (fodhelper, eventvwr,
+            sdclt, wsreset) spawning an interactive shell.
+            These processes have NO legitimate reason to spawn
+            cmd.exe or powershell.exe as children.
+    Level : 14
+  -->
+  <rule id="100095" level="14">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)(cmd\.exe|powershell\.exe|mshta\.exe|wscript\.exe)</match>
+    <match>(?i)(fodhelper\.exe|eventvwr\.exe|sdclt\.exe|wsreset\.exe|CompMgmtLauncher\.exe|cmstp\.exe)</match>
+    <description>UAC Bypass DETECTED: $(win.eventdata.parentImage) spawned $(win.eventdata.image) — auto-elevate process used to bypass UAC prompt</description>
+    <mitre>
+      <id>T1548.002</id>
+    </mitre>
+    <group>uac_bypass,auto_elevate,critical_severity</group>
+  </rule>
+
+  <!--
+    RULE 100096 — Chain: UAC bypass + privilege assignment
+    Logic : UAC bypass (rule 100095) followed by Event ID 4672
+            (special privileges assigned) confirms the escalation
+            actually succeeded. Both must happen for same user.
+    Level : 15
+  -->
+  <rule id="100096" level="15" frequency="2" timeframe="60">
+    <if_matched_sid>100095,100042</if_matched_sid>
+    <same_user />
+    <description>UAC Bypass CONFIRMED: auto-elevate spawn followed by privilege assignment for $(win.eventdata.subjectUserName) — silent privilege escalation succeeded</description>
+    <mitre>
+      <id>T1548.002</id>
+      <id>T1068</id>
+    </mitre>
+    <group>uac_bypass,confirmed_escalation,critical_severity</group>
+  </rule>
+
+  <!--
+    RULE 100097 — Sysmon ID 13: UAC bypass registry key set
+    Logic : The fodhelper bypass works by setting a specific registry
+            key before launching fodhelper. Detecting the registry
+            write catches the attack in preparation phase —
+            BEFORE the UAC bypass actually executes.
+    Level : 13
+  -->
+  <rule id="100097" level="13">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^13$</field>
+    <match>(?i)(ms-settings\\shell\\open\\command|Classes\\ms-settings|Classes\\mscfile\\shell\\open\\command)</match>
+    <description>UAC Bypass Preparation: registry key $(win.eventdata.targetObject) set — fodhelper or eventvwr UAC bypass being prepared</description>
+    <mitre>
+      <id>T1548.002</id>
+      <id>T1547.001</id>
+    </mitre>
+    <group>uac_bypass,registry_prep,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100098 — Sysmon ID 1: fodhelper.exe launched by non-system
+    Logic : fodhelper.exe should only be launched by Windows UI
+            (Explorer, control panel). When a user-level process
+            or PowerShell launches fodhelper directly, it is almost
+            certainly for the UAC bypass.
+    Level : 12
+  -->
+  <rule id="100098" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)fodhelper\.exe</match>
+    <match>(?i)(powershell\.exe|cmd\.exe|wscript\.exe)</match>
+    <description>fodhelper.exe Launched by Script: $(win.eventdata.parentImage) launched fodhelper.exe — likely UAC bypass execution</description>
+    <mitre>
+      <id>T1548.002</id>
+    </mitre>
+    <group>uac_bypass,fodhelper,suspicious_launch</group>
+  </rule>
+
+  <!--
+    RULE 100099 — Chain: registry prep + fodhelper launch
+    Logic : Full UAC bypass kill chain — registry key set (100097)
+            followed by fodhelper launch (100098) within 30 seconds.
+            This two-step sequence is the exact attack procedure.
+    Level : 15
+  -->
+  <rule id="100099" level="15" frequency="2" timeframe="30">
+    <if_matched_sid>100097,100098</if_matched_sid>
+    <description>UAC Bypass FULL CHAIN: registry hijack followed by fodhelper execution — complete UAC bypass attack sequence confirmed</description>
+    <mitre>
+      <id>T1548.002</id>
+    </mitre>
+    <group>uac_bypass,full_chain,critical_severity</group>
+  </rule>
+
+</group>

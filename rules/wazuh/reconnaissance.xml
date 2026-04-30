@@ -1,0 +1,131 @@
+<!--
+  ============================================================
+  Rule File : reconnaissance.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1082 — System Information Discovery
+              T1016 — System Network Configuration Discovery
+              T1033 — System Owner/User Discovery
+  Tactic    : Discovery
+  IDs       : 100080–100084
+  Attack    : net user, net localgroup, whoami /all, ipconfig /all, arp -a
+  ============================================================
+
+  Detection Logic:
+  A single whoami or ipconfig command can be legitimate — an admin
+  checking their own machine. But when an attacker gains access,
+  they run a SEQUENCE of discovery commands rapidly to map the
+  environment before their next move.
+
+  The detection strategy is threshold-based:
+  - Each individual recon command fires a low-level base rule
+  - When 4+ different recon commands fire from the same user
+    in 60 seconds, the threshold rule fires at high severity
+
+  This pattern — multiple recon tools in quick succession — is
+  the fingerprint of an automated post-exploitation script or
+  a manual attacker in an unfamiliar environment.
+
+  Sysmon Event ID 1 gives us process name + command line + user.
+-->
+
+<group name="reconnaissance,discovery,system_info,windows">
+
+  <!--
+    RULE 100080 — Sysmon ID 1: individual recon command
+    Logic : Catches each known recon tool execution. Low level —
+            one command alone is not alarming. Feeds rule 100081.
+    Level : 3
+  -->
+  <rule id="100080" level="3">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)(\\whoami\.exe|\\ipconfig\.exe|\\systeminfo\.exe|\\net\.exe|\\net1\.exe|\\arp\.exe|\\hostname\.exe|\\nltest\.exe|\\nslookup\.exe|\\netstat\.exe|\\tasklist\.exe)</match>
+    <description>Recon Command Executed: $(win.eventdata.image) by $(win.eventdata.user) — $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1082</id>
+      <id>T1016</id>
+      <id>T1033</id>
+    </mitre>
+    <group>reconnaissance,discovery,recon_command</group>
+  </rule>
+
+  <!--
+    RULE 100081 — Threshold: multiple recon commands in 60s
+    Logic : Fires when rule 100080 matches 4+ times from the
+            same user within 60 seconds. A human admin running
+            one command every 15 seconds across 4 different tools
+            is unusual. An automated script does this instantly.
+    Level : 10
+  -->
+  <rule id="100081" level="10" frequency="4" timeframe="60">
+    <if_matched_sid>100080</if_matched_sid>
+    <same_user />
+    <description>Reconnaissance Pattern: $(win.eventdata.user) ran $(frequency) discovery commands in $(timeframe)s — possible post-exploitation enumeration</description>
+    <mitre>
+      <id>T1082</id>
+      <id>T1016</id>
+    </mitre>
+    <group>reconnaissance,discovery,recon_pattern,medium_severity</group>
+  </rule>
+
+  <!--
+    RULE 100082 — Sysmon ID 1: privileged user enumeration commands
+    Logic : Specific net commands targeting users and groups are
+            more targeted than general recon. net localgroup
+            administrators and net user /domain are attacker
+            favorites for identifying high-value accounts.
+    Level : 8
+  -->
+  <rule id="100082" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)(net\s+(user|localgroup|group|accounts|share|session|view))</match>
+    <description>Net Enumeration: $(win.eventdata.commandLine) — attacker mapping users, groups or shares</description>
+    <mitre>
+      <id>T1087</id>
+      <id>T1069</id>
+    </mitre>
+    <group>reconnaissance,net_enumeration</group>
+  </rule>
+
+  <!--
+    RULE 100083 — whoami with privilege flags
+    Logic : whoami /all or whoami /priv dumps the current user's
+            full privilege set. This is used by attackers to
+            assess what they can do before escalating.
+    Level : 8
+  -->
+  <rule id="100083" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)(whoami\s+\/all|whoami\s+\/priv|whoami\s+\/groups)</match>
+    <description>Privilege Enumeration: whoami with privilege flags executed by $(win.eventdata.user) — attacker assessing current access level</description>
+    <mitre>
+      <id>T1033</id>
+      <id>T1069</id>
+    </mitre>
+    <group>reconnaissance,privilege_enum</group>
+  </rule>
+
+  <!--
+    RULE 100084 — High-volume recon: sustained enumeration
+    Logic : If 8+ recon commands fire from the same user in 120s,
+            this is definitely automated tool behavior — not a human
+            typing commands manually. Escalate to high severity.
+    Level : 12
+  -->
+  <rule id="100084" level="12" frequency="8" timeframe="120">
+    <if_matched_sid>100080</if_matched_sid>
+    <same_user />
+    <description>Sustained Reconnaissance: $(win.eventdata.user) ran $(frequency) discovery commands in $(timeframe)s — automated post-exploitation script confirmed</description>
+    <mitre>
+      <id>T1082</id>
+      <id>T1016</id>
+      <id>T1033</id>
+    </mitre>
+    <group>reconnaissance,discovery,automated_recon,high_severity</group>
+  </rule>
+
+</group>

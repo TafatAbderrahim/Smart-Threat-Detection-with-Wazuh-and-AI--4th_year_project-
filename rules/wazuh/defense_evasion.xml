@@ -1,0 +1,112 @@
+<!--
+  ============================================================
+  Rule File : defense_evasion.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1070.001 — Indicator Removal: Clear Windows Event Logs
+  Tactic    : Defense Evasion
+  IDs       : 100065–100069
+  Attack    : wevtutil cl Security  OR  Clear-EventLog -LogName Security
+  ============================================================
+
+  Detection Logic:
+  When an attacker clears Windows event logs they are destroying
+  forensic evidence of their activity. Windows auto-generates two
+  self-referential events when logs are wiped:
+    Event ID 1102 — Security audit log cleared (Security channel)
+    Event ID 104  — System log cleared (System channel)
+  These fire AFTER the wipe — they are the last entry before the
+  log is emptied. Any occurrence is immediately suspicious because
+  legitimate administrators almost never clear Security logs.
+  We also catch the command BEFORE it executes via Sysmon ID 1.
+-->
+
+<group name="defense_evasion,log_clearing,indicator_removal,windows">
+
+  <!--
+    RULE 100065 — Event 1102: Security log cleared
+    Logic : Windows writes 1102 automatically when Security log
+            is cleared. Records the user who did it.
+            Level 14 immediately — no threshold, no chain needed.
+    Level : 14
+  -->
+  <rule id="100065" level="14">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1102$</field>
+    <description>CRITICAL — Security Event Log Cleared by $(win.eventdata.subjectUserName) — attacker destroying forensic evidence</description>
+    <mitre>
+      <id>T1070.001</id>
+    </mitre>
+    <group>defense_evasion,log_clearing,critical_severity</group>
+  </rule>
+
+  <!--
+    RULE 100066 — Event 104: System log cleared
+    Logic : System channel equivalent of 1102. Same logic.
+    Level : 13
+  -->
+  <rule id="100066" level="13">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^104$</field>
+    <description>System Event Log Cleared by $(win.eventdata.subjectUserName) — possible evidence destruction</description>
+    <mitre>
+      <id>T1070.001</id>
+    </mitre>
+    <group>defense_evasion,log_clearing,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100067 — Sysmon ID 1: wevtutil clear command
+    Logic : Catches process creation BEFORE the log is wiped.
+            wevtutil cl <logname> is the standard command.
+            Gives us the full process tree of who ran it.
+    Level : 12
+  -->
+  <rule id="100067" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)wevtutil</match>
+    <match>(?i)(\scl\s|\sclear\s|clear-log)</match>
+    <description>Log Clearing Command: wevtutil clear executed by $(win.eventdata.user) — $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1070.001</id>
+    </mitre>
+    <group>defense_evasion,log_clearing,wevtutil</group>
+  </rule>
+
+  <!--
+    RULE 100068 — PowerShell Clear-EventLog
+    Logic : PowerShell built-in cmdlet does the same as wevtutil.
+            Detect via Sysmon ID 1 or Script Block Logging 4104.
+    Level : 12
+  -->
+  <rule id="100068" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$|^4104$</field>
+    <match>(?i)(Clear-EventLog|Remove-EventLog|Limit-EventLog)</match>
+    <description>PowerShell Log Clearing: Clear-EventLog detected — attacker destroying evidence via PowerShell</description>
+    <mitre>
+      <id>T1070.001</id>
+      <id>T1059.001</id>
+    </mitre>
+    <group>defense_evasion,log_clearing,powershell</group>
+  </rule>
+
+  <!--
+    RULE 100069 — Chain: attack followed by log wipe
+    Logic : If any of our attack rules fired AND log clearing
+            happens within 300s — attacker is covering tracks
+            after a successful compromise. Highest severity.
+    Level : 15
+  -->
+  <rule id="100069" level="15" frequency="2" timeframe="300">
+    <if_matched_sid>100002,100011,100024,100043,100065</if_matched_sid>
+    <description>ATTACK + LOG WIPE: attack activity followed by log clearing — attacker covering tracks after compromise</description>
+    <mitre>
+      <id>T1070.001</id>
+    </mitre>
+    <group>defense_evasion,log_clearing,attack_sequence,critical_severity</group>
+  </rule>
+
+</group>

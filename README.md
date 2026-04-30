@@ -12,11 +12,21 @@ For testers, the project is organized into the following directories to make dep
   - `audit.rules`: Linux auditd rules. Copy to `/etc/audit/rules.d/` on the Linux VM, then run `augenrules --load`.
 
 - **`rules/wazuh/`**: Custom Wazuh detection rules (XML format) for detecting specific attack techniques:
-  - `rdp_brute_force.xml`
-  - `user_enumeration.xml`
+  - `credential_access.xml`
+  - `defense_evasion.xml`
+  - `exfiltration.xml`
+  - `kerberoasting.xml`
   - `malicious_powershell.xml`
-  - `suspicious_download_eicar.xml`
+  - `pass_the_hash.xml`
+  - `persistence.xml`
   - `privilege_escalation.xml`
+  - `rdp_brute_force.xml`
+  - `reconnaissance.xml`
+  - `reverse_shell.xml`
+  - `scheduled_task.xml`
+  - `suspicious_download_eicar.xml`
+  - `uac_bypass.xml`
+  - `user_enumeration.xml`
 
 - **`rules/yara/`**: YARA rules for file-based detection.
   - `eicar_detection.yar`

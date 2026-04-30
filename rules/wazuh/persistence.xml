@@ -1,0 +1,119 @@
+<!--
+  ============================================================
+  Rule File : persistence.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1547.001 — Boot or Logon Autostart: Registry Run Keys
+  Tactic    : Persistence, Privilege Escalation
+  IDs       : 100060–100064
+  Attack    : reg add HKLM\SOFTWARE\...\Run /v malware /d C:\evil.exe
+  ============================================================
+
+  Detection Logic:
+  Run keys tell Windows to execute a program automatically at
+  every login or boot. This is the most common persistence
+  mechanism because it is simple and survives reboots.
+
+  Sysmon Event ID 13 (RegistryValueSet) captures every registry
+  write with: TargetObject (the full key path) and Details (value).
+
+  We flag:
+  1. Any write to known autostart paths (Run, RunOnce, Winlogon)
+  2. Escalate if value points to temp/script path
+  3. Escalate further if the writing process is PowerShell or cmd
+  4. Detect Winlogon hijacking as the stealthiest variant
+-->
+
+<group name="persistence,registry,autostart,windows">
+
+  <!--
+    RULE 100060 — Sysmon ID 13: write to Run key
+    Logic : RegistryValueSet where TargetObject contains any of
+            the standard autostart key paths. Covers HKLM + HKCU
+            and all common variants (Run, RunOnce, RunServices).
+    Level : 10
+  -->
+  <rule id="100060" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^13$</field>
+    <match>(?i)(CurrentVersion\\Run|CurrentVersion\\RunOnce|CurrentVersion\\RunServices|CurrentVersion\\RunServicesOnce)</match>
+    <description>Registry Persistence: value written to autostart key $(win.eventdata.targetObject) by $(win.eventdata.image)</description>
+    <mitre>
+      <id>T1547.001</id>
+    </mitre>
+    <group>persistence,registry_run</group>
+  </rule>
+
+  <!--
+    RULE 100061 — Escalation: Run value points to suspicious path
+    Logic : If the Details field (the value data — what will execute)
+            contains a temp/appdata/script path, it is malware.
+            Legitimate software installs to Program Files, not Temp.
+    Level : 13
+  -->
+  <rule id="100061" level="13">
+    <if_matched_sid>100060</if_matched_sid>
+    <match>(?i)(\\Temp\\|\\AppData\\|\\Public\\|\\Users\\Public\\|\.ps1|\.bat|\.vbs|\.hta|\.cmd|\.js)</match>
+    <description>Registry Persistence SUSPICIOUS: Run key value points to temp path or script — $(win.eventdata.details) — likely malware</description>
+    <mitre>
+      <id>T1547.001</id>
+    </mitre>
+    <group>persistence,registry_run,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100062 — Escalation: Run key written by scripting engine
+    Logic : Legitimate installers write Run keys from their own
+            installer process. When cmd.exe or powershell.exe
+            writes a Run key, it is almost always an attacker.
+    Level : 14
+  -->
+  <rule id="100062" level="14">
+    <if_matched_sid>100060</if_matched_sid>
+    <match>(?i)(powershell\.exe|cmd\.exe|wscript\.exe|cscript\.exe|mshta\.exe)</match>
+    <description>Registry Persistence via Script Engine: $(win.eventdata.image) wrote to Run key — attacker establishing boot persistence</description>
+    <mitre>
+      <id>T1547.001</id>
+    </mitre>
+    <group>persistence,registry_run,script_persistence,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100063 — Sysmon ID 12: new autostart key created
+    Logic : Event 12 fires when a registry KEY is created.
+            Creating a new subkey under Run paths is unusual and
+            often precedes setting the malicious run value.
+    Level : 8
+  -->
+  <rule id="100063" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^12$</field>
+    <match>(?i)(CurrentVersion\\Run|AppInit_DLLs|Image File Execution Options)</match>
+    <description>Registry Key Created in Autostart Path: $(win.eventdata.targetObject) — possible persistence setup</description>
+    <mitre>
+      <id>T1547.001</id>
+    </mitre>
+    <group>persistence,registry_key_create</group>
+  </rule>
+
+  <!--
+    RULE 100064 — Winlogon hijacking
+    Logic : Winlogon\Userinit and Winlogon\Shell control what
+            process runs at logon. Modifying these replaces the
+            legitimate logon shell — stealthiest persistence variant.
+    Level : 14
+  -->
+  <rule id="100064" level="14">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^13$</field>
+    <match>(?i)(Winlogon\\Userinit|Winlogon\\Shell|Winlogon\\Taskman)</match>
+    <description>Winlogon Hijack: $(win.eventdata.targetObject) modified — attacker replacing logon process for persistent backdoor</description>
+    <mitre>
+      <id>T1547.001</id>
+      <id>T1055</id>
+    </mitre>
+    <group>persistence,winlogon_hijack,critical_severity</group>
+  </rule>
+
+</group>

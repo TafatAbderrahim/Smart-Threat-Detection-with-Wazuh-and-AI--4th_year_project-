@@ -1,0 +1,125 @@
+<!--
+  ============================================================
+  Rule File : kerberoasting.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1558.003 — Steal or Forge Kerberos Tickets: Kerberoasting
+  Tactic    : Credential Access
+  IDs       : 100085–100089
+  Attack    : Rubeus.exe kerberoast  OR  Impacket GetUserSPNs.py
+  NOTE      : Requires Active Directory domain environment
+  ============================================================
+
+  Detection Logic:
+  Kerberoasting requests Kerberos service tickets for service
+  accounts (accounts with SPNs). The tickets are encrypted with
+  the service account's password hash, then cracked offline.
+
+  The key indicator is the encryption type requested:
+    0x17 (23 decimal) = RC4-HMAC  → weak, crackable, attacker choice
+    0x12 (18 decimal) = AES256    → strong, modern Windows default
+    0x11 (17 decimal) = AES128    → acceptable
+
+  Modern Active Directory environments use AES by default.
+  When a domain user requests RC4-encrypted service tickets
+  for multiple service accounts, that is Kerberoasting.
+
+  Windows Event ID 4769 (Kerberos Service Ticket Requested)
+  contains: ServiceName, TicketEncryptionType, ClientAddress.
+
+  IMPORTANT: This rule requires a domain controller with
+  Kerberos logging enabled (audit Kerberos Service Ticket
+  Operations in Group Policy).
+-->
+
+<group name="kerberoasting,credential_access,kerberos,windows">
+
+  <!--
+    RULE 100085 — Event 4769: RC4 encrypted service ticket request
+    Logic : Fires on any 4769 where TicketEncryptionType = 0x17.
+            A single RC4 request could be a legacy application —
+            this base rule feeds the threshold rule below.
+    Level : 8
+  -->
+  <rule id="100085" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4769$</field>
+    <match>TicketEncryptionType: 0x17</match>
+    <description>Kerberos RC4 Ticket Request: $(win.eventdata.serviceName) requested with RC4 encryption by $(win.eventdata.clientAddress) — possible Kerberoasting probe</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+    <group>kerberoasting,rc4_ticket</group>
+  </rule>
+
+  <!--
+    RULE 100086 — Threshold: multiple RC4 requests in 30s
+    Logic : 3+ RC4 service ticket requests from the same source
+            in 30 seconds = automated Kerberoasting tool.
+            Rubeus and Impacket enumerate all SPNs rapidly.
+    Level : 13
+  -->
+  <rule id="100086" level="13" frequency="3" timeframe="30">
+    <if_matched_sid>100085</if_matched_sid>
+    <same_source_ip />
+    <description>Kerberoasting DETECTED: $(win.eventdata.clientAddress) requested $(frequency) RC4 service tickets in $(timeframe)s — Rubeus or Impacket activity</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+    <group>kerberoasting,rc4_spray,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100087 — Event 4769: service ticket for sensitive account
+    Logic : Kerberoasting targets high-value service accounts
+            (SQL server, backup, admin service accounts).
+            Watching for tickets requested for these specific
+            service names adds targeted detection.
+    Level : 10
+  -->
+  <rule id="100087" level="10">
+    <if_matched_sid>100085</if_matched_sid>
+    <match>(?i)(MSSQLSvc|WSMAN|TERMSRV|HTTP|cifs|backup|admin|svc_)</match>
+    <description>Kerberoasting High-Value Target: RC4 ticket requested for sensitive service $(win.eventdata.serviceName) — high-value account at risk</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+    <group>kerberoasting,high_value_target</group>
+  </rule>
+
+  <!--
+    RULE 100088 — Sysmon ID 1: Rubeus or Impacket execution
+    Logic : If Rubeus.exe or GetUserSPNs.py appear as process
+            names, alert immediately — these are pure attack tools.
+    Level : 14
+  -->
+  <rule id="100088" level="14">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)(Rubeus\.exe|GetUserSPNs|kerberoast)</match>
+    <description>Kerberoasting Tool Detected: $(win.eventdata.image) executed — $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+    <group>kerberoasting,attack_tool,critical_severity</group>
+  </rule>
+
+  <!--
+    RULE 100089 — Event 4769 from known Kali IP
+    Logic : Any Kerberos ticket request originating from the Kali
+            attacker machine. The domain controller should never
+            see ticket requests from a non-domain Kali machine.
+    Level : 14
+  -->
+  <rule id="100089" level="14">
+    <if_matched_sid>100085</if_matched_sid>
+    <match>192.168.109.158</match>
+    <description>Kerberoasting from Kali: RC4 ticket request from attacker IP 192.168.109.158 — cross-subnet Kerberoasting attack</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+    <group>kerberoasting,external_attacker,critical_severity</group>
+  </rule>
+
+</group>

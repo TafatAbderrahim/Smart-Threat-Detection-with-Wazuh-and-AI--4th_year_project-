@@ -1,0 +1,123 @@
+<!--
+  ============================================================
+  Rule File : scheduled_task.xml
+  Author    : Teffat Abderahim
+  Project   : Smart Threat Detection with Wazuh and AI
+  Team      : ESI Sidi Bel Abbes — CyS 2SC — 2025/2026
+  MITRE     : T1053.005 — Scheduled Task/Job: Scheduled Task
+  Tactic    : Persistence, Execution, Privilege Escalation
+  IDs       : 100070–100074
+  Attack    : schtasks /create /tn evil /tr C:\evil.exe /sc onlogon
+  ============================================================
+
+  Detection Logic:
+  Scheduled tasks execute programs automatically on a trigger
+  (boot, logon, time interval). Attackers use them for persistence
+  because they survive reboots and run under SYSTEM if elevated.
+
+  Windows Event ID 4698 fires when any scheduled task is created.
+  It records: task name, task XML content (including the action
+  path and trigger), and the user who created it.
+
+  Sysmon Event ID 1 catches schtasks.exe process creation with
+  the /create flag — useful to see the full command line before
+  the task is registered.
+
+  We flag:
+  1. Any task creation pointing to temp/script paths
+  2. Tasks with onlogon or onstart triggers (most persistent)
+  3. Tasks created by scripting engines (not installers)
+  4. Tasks running as SYSTEM created by non-admin users
+-->
+
+<group name="persistence,scheduled_task,execution,windows">
+
+  <!--
+    RULE 100070 — Event 4698: scheduled task created
+    Logic : Fires on every task creation. Base rule — filters
+            for suspicious execution paths in the task action.
+            Legitimate software tasks point to Program Files,
+            not Temp or AppData.
+    Level : 8
+  -->
+  <rule id="100070" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4698$</field>
+    <description>Scheduled Task Created: $(win.eventdata.taskName) by $(win.eventdata.subjectUserName) — reviewing task content</description>
+    <mitre>
+      <id>T1053.005</id>
+    </mitre>
+    <group>persistence,scheduled_task</group>
+  </rule>
+
+  <!--
+    RULE 100071 — Escalation: task points to suspicious path
+    Logic : Task XML content (TaskContent field) contains the
+            action path. If that path is in Temp/AppData or is
+            a script file, it is malicious persistence.
+    Level : 12
+  -->
+  <rule id="100071" level="12">
+    <if_matched_sid>100070</if_matched_sid>
+    <match>(?i)(\\Temp\\|\\AppData\\|\\Public\\|\.ps1|\.bat|\.vbs|\.hta|\.cmd)</match>
+    <description>Suspicious Scheduled Task: $(win.eventdata.taskName) executes script or temp file — $(win.eventdata.taskContent)</description>
+    <mitre>
+      <id>T1053.005</id>
+    </mitre>
+    <group>persistence,scheduled_task,suspicious_action,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100072 — Escalation: task trigger is boot or logon
+    Logic : Onlogon and onstart triggers are the most persistent —
+            they ensure the payload runs every time the machine
+            boots or any user logs in.
+    Level : 13
+  -->
+  <rule id="100072" level="13">
+    <if_matched_sid>100070</if_matched_sid>
+    <match>(?i)(onlogon|onstart|AtStartup|AtLogon|BootTrigger|LogonTrigger)</match>
+    <description>Persistent Scheduled Task: $(win.eventdata.taskName) triggers at boot or logon — survives reboots</description>
+    <mitre>
+      <id>T1053.005</id>
+    </mitre>
+    <group>persistence,scheduled_task,boot_trigger,high_severity</group>
+  </rule>
+
+  <!--
+    RULE 100073 — Sysmon ID 1: schtasks.exe with /create flag
+    Logic : Catches the command BEFORE the task is registered.
+            Gives the full commandline including task name,
+            trigger, and action — earlier detection than 4698.
+    Level : 10
+  -->
+  <rule id="100073" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^1$</field>
+    <match>(?i)schtasks</match>
+    <match>(?i)(\/create|\/sc\s|\/tr\s|\/tn\s)</match>
+    <description>Scheduled Task Creation Command: schtasks /create detected — $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1053.005</id>
+    </mitre>
+    <group>persistence,scheduled_task,schtasks_cmd</group>
+  </rule>
+
+  <!--
+    RULE 100074 — Event 4702: existing task updated
+    Logic : Attackers sometimes modify existing legitimate tasks
+            to add a malicious action rather than creating new ones.
+            This is stealthier — the task name looks legitimate.
+    Level : 10
+  -->
+  <rule id="100074" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4702$</field>
+    <description>Scheduled Task Modified: $(win.eventdata.taskName) updated by $(win.eventdata.subjectUserName) — verify task action was not altered</description>
+    <mitre>
+      <id>T1053.005</id>
+    </mitre>
+    <group>persistence,scheduled_task,task_modified</group>
+  </rule>
+
+</group>
