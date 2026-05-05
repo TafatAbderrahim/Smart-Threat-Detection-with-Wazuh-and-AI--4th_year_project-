@@ -43,7 +43,7 @@
   <rule id="100030" level="8">
     <if_group>windows</if_group>
     <field name="win.system.eventID">^11$</field>
-    <field name="win.eventdata.targetFilename">(?i)(\\Temp\\|\\AppData\\Roaming\\|\\AppData\\Local\\Temp\\|\\Downloads\\|\\Public\\)</field>
+    <match>(?i)\\Temp\\|\\AppData\\|\\Downloads\\|\\Public\\</match>
     <description>Suspicious File Creation: file written to temp/download path — $(win.eventdata.targetFilename)</description>
     <mitre>
       <id>T1105</id>
@@ -60,7 +60,7 @@
   -->
   <rule id="100031" level="10">
     <if_matched_sid>100030</if_matched_sid>
-    <field name="win.eventdata.targetFilename">(?i)\.(exe|dll|ps1|bat|vbs|hta|js|cmd|scr|pif)$</field>
+    <match>(?i)\.(exe|dll|ps1|bat|vbs|hta|js|cmd|scr|pif)</match>
     <description>Suspicious Executable Drop: $(win.eventdata.targetFilename) written to temp path — possible malware delivery</description>
     <mitre>
       <id>T1105</id>
@@ -80,8 +80,8 @@
   <rule id="100032" level="11">
     <if_group>windows</if_group>
     <field name="win.system.eventID">^11$</field>
-    <field name="win.eventdata.image">(?i)(powershell\.exe|cmd\.exe|certutil\.exe|bitsadmin\.exe|mshta\.exe|wscript\.exe|cscript\.exe)</field>
-    <field name="win.eventdata.targetFilename">(?i)(\\Temp\\|\\AppData\\|\\Downloads\\|\\Public\\)</field>
+    <match>(?i)powershell\.exe|cmd\.exe|certutil\.exe|bitsadmin\.exe|mshta\.exe|wscript\.exe|cscript\.exe</match>
+    <match>(?i)\\Temp\\|\\AppData\\|\\Downloads\\|\\Public\\</match>
     <description>Suspicious Download: $(win.eventdata.image) wrote file to $(win.eventdata.targetFilename) — possible cradle download</description>
     <mitre>
       <id>T1105</id>

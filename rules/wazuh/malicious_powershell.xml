@@ -43,8 +43,8 @@
   <rule id="100020" level="10">
     <if_group>windows</if_group>
     <field name="win.system.eventID">^1$</field>
-    <field name="win.eventdata.image">(?i)powershell\.exe$</field>
-    <field name="win.eventdata.commandLine">(?i)(-EncodedCommand|-enc\s)</field>
+    <match>(?i)powershell\.exe</match>
+    <match>(?i)-EncodedCommand|-enc </match>
     <description>Malicious PowerShell: encoded command detected — $(win.eventdata.commandLine)</description>
     <mitre>
       <id>T1059.001</id>
@@ -68,8 +68,8 @@
   <rule id="100021" level="12">
     <if_group>windows</if_group>
     <field name="win.system.eventID">^1$</field>
-    <field name="win.eventdata.image">(?i)powershell\.exe$</field>
-    <field name="win.eventdata.commandLine">(?i)(DownloadString|DownloadFile|WebClient|Invoke-WebRequest|iwr\s|curl\s)</field>
+    <match>(?i)powershell\.exe</match>
+    <match>(?i)DownloadString|DownloadFile|WebClient|Invoke-WebRequest</match>
     <description>Malicious PowerShell: download cradle detected — possible remote payload retrieval from $(win.eventdata.commandLine)</description>
     <mitre>
       <id>T1059.001</id>
@@ -91,8 +91,8 @@
   <rule id="100022" level="13">
     <if_group>windows</if_group>
     <field name="win.system.eventID">^1$</field>
-    <field name="win.eventdata.image">(?i)powershell\.exe$</field>
-    <field name="win.eventdata.commandLine">(?i)(AmsiUtils|amsiInitFailed|Disable-AmsiProvider|amsi\.dll)</field>
+    <match>(?i)powershell\.exe</match>
+    <match>(?i)AmsiUtils|amsiInitFailed|Disable-AmsiProvider</match>
     <description>Malicious PowerShell: AMSI bypass attempt detected — attacker trying to disable script scanning</description>
     <mitre>
       <id>T1059.001</id>
@@ -131,7 +131,7 @@
   -->
   <rule id="100024" level="14">
     <if_matched_sid>100020</if_matched_sid>
-    <field name="win.eventdata.commandLine">(?i)(-WindowStyle\s+Hidden|-w\s+hidden|-NonInteractive)</field>
+    <match>(?i)-WindowStyle Hidden|-w hidden|-NonInteractive</match>
     <description>Malicious PowerShell EVASION: encoded command with hidden window — full attacker evasion profile detected</description>
     <mitre>
       <id>T1059.001</id>

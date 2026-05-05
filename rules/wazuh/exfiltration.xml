@@ -103,7 +103,7 @@
     Level : 14
   -->
   <rule id="100093" level="14" frequency="2" timeframe="60">
-    <if_matched_sid>100030,100090</if_matched_sid>
+    <if_matched_sid>100090</if_matched_sid>
     <description>Exfiltration Chain: file access followed by outbound connection — data collection and exfiltration pattern detected</description>
     <mitre>
       <id>T1041</id>

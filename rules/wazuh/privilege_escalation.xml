@@ -48,8 +48,8 @@
   <rule id="100040" level="8">
     <if_group>windows</if_group>
     <field name="win.system.eventID">^1$</field>
-    <field name="win.eventdata.image">(?i)(cmd\.exe|powershell\.exe|mshta\.exe|wscript\.exe|cscript\.exe|rundll32\.exe)</field>
-    <field name="win.eventdata.parentImage">(?i)(explorer\.exe|winword\.exe|excel\.exe|outlook\.exe|iexplore\.exe|chrome\.exe|firefox\.exe)</field>
+    <match>(?i)cmd\.exe|powershell\.exe|mshta\.exe|wscript\.exe|cscript\.exe|rundll32\.exe</match>
+    <match>(?i)explorer\.exe|winword\.exe|excel\.exe|outlook\.exe|iexplore\.exe|chrome\.exe|firefox\.exe</match>
     <description>Suspicious Process Chain: $(win.eventdata.parentImage) spawned $(win.eventdata.image) — unusual parent-child relationship</description>
     <mitre>
       <id>T1068</id>
@@ -109,7 +109,7 @@
     Level : 13
   -->
   <rule id="100043" level="13" frequency="2" timeframe="60">
-    <if_matched_sid>100040,100042</if_matched_sid>
+    <if_matched_sid>100040</if_matched_sid>
     <same_user />
     <description>Privilege Escalation DETECTED: suspicious process chain followed by privilege assignment for user $(win.eventdata.subjectUserName) — possible T1068 exploitation</description>
     <mitre>
@@ -127,7 +127,7 @@
     Level : 14
   -->
   <rule id="100044" level="14" frequency="2" timeframe="120">
-    <if_matched_sid>100041,100042</if_matched_sid>
+    <if_matched_sid>100041</if_matched_sid>
     <same_user />
     <description>Privilege Escalation CONFIRMED: access denied followed by privilege grant for $(win.eventdata.subjectUserName) — escalation succeeded after failed attempt</description>
     <mitre>
